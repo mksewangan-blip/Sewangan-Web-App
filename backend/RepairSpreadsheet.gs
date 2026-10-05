@@ -48,3 +48,22 @@ function seedAccessV2_(ss){
  ds.filter(r=>r[0]).forEach(d=>mods.forEach(m=>{let level=d[2],view=false,add=false,edit=false,del=false,approve=false,scope="Own";if(["National","State"].includes(level)){view=add=edit=approve=true;scope="Own + All Lower"}else if(level==="District"){view=add=edit=true;approve=["members","membership_applications","volunteers","donations","goods_donations","help_requests"].includes(m[0]);scope="Own + All Lower"}else if(level==="Block"){view=add=edit=true;scope="Own + All Lower"}else if(d[0]==="DES-AM"){view=["members","volunteers","donors","donations","goods_donations","programs","projects","events","campaigns","documents","certificates","meetings","notifications","beneficiaries","help_requests"].includes(m[0]);add=["volunteers","donors","donations","goods_donations","beneficiaries","help_requests"].includes(m[0]);edit=["volunteers","donors","beneficiaries","help_requests"].includes(m[0]);scope="Own + Direct Lower"}else{view=["programs","projects","events","campaigns","notifications","documents","certificates","meetings","attendance"].includes(m[0])}out.push([d[0],m[0],view,add,edit,del,approve,scope,"Active"])}));
  if(out.length)s.getRange(2,1,out.length,9).setValues(out);
 }
+
+function addNgoV3Sheets(){
+ const ss=SpreadsheetApp.getActive(),defs={
+  SalarySlips:["SalarySlipID","EmployeeID","EmployeeName","OfficeID","Month","Year","BasicSalary","Allowances","Deductions","NetSalary","PaymentDate","PaymentMode","Reference","GeneratedAt","Status"],
+  Payroll:["PayrollID","EmployeeID","OfficeID","Month","Year","BasicSalary","Allowances","Deductions","NetSalary","Status","ApprovedBy","PaidAt"],
+  EmployeeAttendance:["AttendanceID","EmployeeID","EmployeeName","OfficeID","Date","CheckIn","CheckOut","Status","MarkedBy","Remarks"],
+  Tasks:["TaskID","Title","Description","AssignedToMemberID","AssignedToOfficeID","Priority","DueDate","Status","CreatedBy","CreatedAt"],
+  Grievances:["GrievanceID","MemberID","OfficeID","Subject","Description","SubmittedAt","Status","AssignedTo","Resolution","ResolvedAt"],
+  Training:["TrainingID","Title","OfficeID","Date","Venue","Trainer","Participants","Status","Notes"],
+  Compliance:["ComplianceID","Title","Type","DueDate","ResponsibleOfficeID","ResponsibleMemberID","Status","DocumentURL","CompletedAt","Notes"],
+  Partnerships:["PartnershipID","OrganizationName","ContactPerson","Phone","Email","Type","StartDate","EndDate","Status","Notes"],
+  ImpactRecords:["ImpactID","ProgramID","ProjectID","OfficeID","Metric","Target","Achieved","Period","EvidenceURL","Notes"]
+ };
+ Object.keys(defs).forEach(n=>ensure_(ss,n,defs[n]));
+ seedModulesV2_(ss);
+ const am=ss.getSheetByName("AppModules"),existing=am.getDataRange().getValues().slice(1).map(r=>r[2]);
+ [["SalarySlips","Human Resources"],["Payroll","Human Resources"],["EmployeeAttendance","Human Resources"],["Tasks","Administration"],["Grievances","Administration"],["Training","Human Resources"],["Compliance","Administration"],["Partnerships","Programs"],["ImpactRecords","Programs"]].forEach((x,i)=>{if(!existing.includes(x[0]))am.appendRow([x[0].replace(/([a-z])([A-Z])/g,"$1_$2").toLowerCase(),x[0].replace(/([a-z])([A-Z])/g,"$1 $2"),x[0],x[1],true,true,false,"grid",100+i,"Active"])});
+ seedAccessV2_(ss);SpreadsheetApp.flush();return "NGO v3 sheets added";
+}

@@ -86,14 +86,49 @@ function resetPw_(s,p){const m=table_("Members").find(x=>x.MemberID===p.memberId
 function changePw_(s,p){if(s.kind!=="member")throw Error("Member login required");const l=loginRow_(s.memberId);if(l.PasswordHash!==hash_(p.oldPassword))throw Error("Current password incorrect");if(String(p.newPassword).length<6)throw Error("Minimum 6 characters");l.PasswordHash=hash_(p.newPassword);l.MustChangePassword=false;l.PasswordChangedAt=new Date();save_("MemberLogins",l);return true}
 function donation_(s,p){permission_(s,"donations","Add");const no=nextReceipt_(),id=uid_("DON"),mid=s.kind==="member"?s.memberId:"";append_("Donations",{DonationID:id,ReceiptNo:no,Date:new Date(),DonorID:p.DonorID||"",DonorName:p.DonorName,Amount:p.Amount,PaymentMode:p.PaymentMode,TransactionNo:p.TransactionNo||"",Purpose:p.Purpose||"General Donation",CollectorUserID:mid,ReferredByMemberID:mid,Source:s.kind==="member"?"Member App":"Admin App",SyncStatus:"Synced",VerificationStatus:s.kind==="member"?"Pending":"Verified",Status:s.kind==="member"?"Pending Verification":"Received"});return{DonationID:id,ReceiptNo:no}}
 function doGet(){return out_({ok:true,app:"Sewangan ERP API",version:"android-final-v2"})}
+
+function fieldMeta_(sheetName){const h=headers_(sheetName);return h.map(x=>({name:x,label:x.replace(/([a-z])([A-Z])/g,"$1 $2"),type:/Date|At|DOB|ValidUntil/i.test(x)?"date":/Amount|Salary|Fee|Value|Quantity|Limit/i.test(x)?"number":/Email/i.test(x)?"email":/Phone|Mobile|PIN/i.test(x)?"tel":"text",readonly:/ID$|No$|Number$|CreatedAt|UpdatedAt/i.test(x)}))}
+function searchAll_(s,q){
+ q=String(q||"").trim().toLowerCase();if(q.length<2)return[];
+ let mods=s.kind==="admin"?modules_().filter(x=>bool_(x.AdminVisible)):modules_().filter(x=>bool_(x.MainAppEligible)&&s.access.some(a=>a.ModuleKey===x.ModuleKey&&bool_(a.View)));
+ let out=[];
+ mods.slice(0,70).forEach(m=>{try{let data=scope_(s,m.ModuleKey,table_(m.SheetName));data.forEach(r=>{let text=Object.values(r).join(" ").toLowerCase();if(text.includes(q)&&out.length<60){let vals=Object.values(r).filter(Boolean);out.push({module:m.ModuleKey,moduleName:m.ModuleName,title:r.Name||r.OfficeName||r.DonorName||r.Title||r.ProjectName||vals[0]||"Record",subtitle:vals.slice(1,4).join(" • "),record:r})}})}catch(e){}});
+ return out;
+}
+function notificationList_(s){
+ let all=table_("Notifications");
+ if(s.kind==="admin")return all.slice(-100).reverse();
+ let m=s.member,rank=Number((table_("Designations").find(x=>x.DesignationID===m.DesignationID)||{}).Rank||999);
+ return all.filter(n=>{
+   if(n.MemberID&&n.MemberID===m.MemberID)return true;
+   if(n.TargetDesignationID&&n.TargetDesignationID===m.DesignationID)return true;
+   if(n.TargetOfficeID&&n.TargetOfficeID===m.OfficeID)return true;
+   if(n.TargetRankMax){let tr=Number(n.TargetRankMax);return rank>=tr}
+   return !n.MemberID&&!n.TargetDesignationID&&!n.TargetOfficeID&&!n.TargetRankMax;
+ }).slice(-100).reverse();
+}
+function notifyLower_(s,p){
+ if(s.kind!=="member")throw Error("Member login required");
+ const me=table_("Designations").find(x=>x.DesignationID===s.member.DesignationID),rank=Number(me.Rank||999);
+ const id=uid_("NOT");append_("Notifications",{NotificationID:id,Title:p.title,Message:p.message,Type:p.type||"General",TargetRankMax:rank+1,TargetOfficeID:s.member.OfficeID,CreatedBy:s.memberId,CreatedAt:new Date(),Status:"Active"});
+ return{id};
+}
+function deleteRecord_(s,p){if(s.kind!=="admin")permission_(s,p.module,"Delete");const m=module_(p.module),sh=sh_(m.SheetName),v=sh.getDataRange().getValues();for(let i=1;i<v.length;i++){if(String(v[i][0])===String(p.id)){sh.deleteRow(i+1);clear_(m.SheetName);return true}}throw Error("Record not found")}
+function moduleSchema_(s,p){const m=module_(p.module);permission_(s,p.module,"View");return{module:m,fields:fieldMeta_(m.SheetName)}}
+function markNotification_(s,p){return true} // read state is stored locally in app for speed
 function doPost(e){try{
  const q=JSON.parse(e.postData.contents||"{}"),a=q.action,p=q.payload||{};let s=null;if(!["memberLogin","adminLogin"].includes(a))s=hydrate_(sess_(q.token));
  let d;
  if(a==="memberLogin")d=memberLogin_(p);
  else if(a==="adminLogin")d=adminLogin_(p);
- else if(a==="bootstrap")d=bootstrap_(s);
+ else if(a==="bootstrap"){d=bootstrap_(s);d.notifications=notificationList_(s)}
  else if(a==="list"){const m=module_(p.module);permission_(s,p.module,"View");d=scope_(s,p.module,table_(m.SheetName))}
+ else if(a==="schema")d=moduleSchema_(s,p);
  else if(a==="save"){const m=module_(p.module);permission_(s,p.module,p.isEdit?"Edit":"Add");d=save_(m.SheetName,p.record)}
+ else if(a==="delete")d=deleteRecord_(s,p);
+ else if(a==="globalSearch")d=searchAll_(s,p.q);
+ else if(a==="notifications")d=notificationList_(s);
+ else if(a==="notifyLower")d=notifyLower_(s,p);
  else if(a==="officeCards")d=officeCards_(s);
  else if(a==="approveMember"){if(s.kind!=="admin")throw Error("Admin required");d=approve_(s,p)}
  else if(a==="setMemberStatus"){if(s.kind!=="admin")throw Error("Admin required");d=setStatus_(s,p)}
