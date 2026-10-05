@@ -1,130 +1,108 @@
 
 const SS=SpreadsheetApp.getActive();
-const CACHE=CacheService.getScriptCache();
-const SESSION_SECONDS=43200;
-const MODULE_SHEETS={
-  offices:"Offices",members:"Members",volunteers:"Volunteers",donations:"Donations",goodsdonations:"GoodsDonations",
-  donors:"Donors",programs:"Programs",projects:"Projects",events:"Events",campaigns:"Campaigns",beneficiaries:"Beneficiaries",
-  helprequests:"HelpRequests",charityactivities:"CharityActivities",attendance:"Attendance",documents:"Documents",
-  certificates:"Certificates",meetings:"Meetings",notifications:"Notifications",membershipapplications:"MembershipApplications"
-};
-function json_(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
-function sheet_(n){const s=SS.getSheetByName(n);if(!s)throw Error("Missing sheet: "+n);return s}
-function rows_(n){const v=sheet_(n).getDataRange().getDisplayValues();if(v.length<2)return[];const h=v[0];return v.slice(1).filter(r=>r.some(Boolean)).map(r=>Object.fromEntries(h.map((x,i)=>[x,r[i]])))}
-function append_(n,o){const s=sheet_(n),h=s.getRange(1,1,1,s.getLastColumn()).getValues()[0];s.appendRow(h.map(k=>o[k]??""));return o}
-function save_(n,o){const s=sheet_(n),v=s.getDataRange().getValues(),h=v[0],id=String(o[h[0]]||"");if(!id)throw Error(h[0]+" required");let rr=0;for(let i=1;i<v.length;i++)if(String(v[i][0])===id){rr=i+1;break}const row=h.map(k=>o[k]??"");rr?s.getRange(rr,1,1,h.length).setValues([row]):s.appendRow(row);return o}
-function kv_(n,key="SettingKey",val="SettingValue"){return Object.fromEntries(rows_(n).map(r=>[r[key]||r.Key,r[val]??r.Value]))}
-function uid_(p){return p+"-"+Utilities.getUuid().slice(0,8).toUpperCase()}
-function audit_(user,action,module,id,details){append_("AuditLog",{LogID:uid_("LOG"),DateTime:new Date(),UserID:user||"SYSTEM",Action:action,Module:module,RecordID:id||"",Details:details||""})}
-function hash_(password){const b=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,password,Utilities.Charset.UTF_8);return b.map(x=>("0"+(x&255).toString(16)).slice(-2)).join("")}
-function firstName_(name){return String(name||"").trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z]/g,"")}
-function dobDay_(dob){const d=new Date(dob);if(isNaN(d))return"01";return String(d.getDate()).padStart(2,"0")}
-function defaultPassword_(name,dob){return firstName_(name)+dobDay_(dob)}
-function memberByPhone_(phone){return rows_("Members").find(x=>String(x.Mobile).replace(/\D/g,"")===String(phone).replace(/\D/g,""))}
-function loginRow_(memberId){return rows_("MemberLogins").find(x=>x.MemberID===memberId)}
+const CACHE=CacheService.getScriptCache(), SESSION=PropertiesService.getScriptProperties();
+const SESSION_TTL=21600, DATA_TTL=120;
+function out_(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
+function sh_(n){const s=SS.getSheetByName(n);if(!s)throw Error("Sheet not found: "+n);return s}
+function key_(n){return "D_"+n}
+function clear_(n){CACHE.remove(key_(n))}
+function table_(n,fresh){
+  const k=key_(n); if(!fresh){const c=CACHE.get(k);if(c)return JSON.parse(c)}
+  const s=sh_(n),v=s.getDataRange().getDisplayValues(); if(!v.length)return[];
+  const h=v[0],r=v.slice(1).filter(x=>x.some(Boolean)).map(x=>Object.fromEntries(h.map((z,i)=>[z,x[i]])));
+  try{CACHE.put(k,JSON.stringify(r),DATA_TTL)}catch(e){}
+  return r;
+}
+function headers_(n){return sh_(n).getRange(1,1,1,sh_(n).getLastColumn()).getDisplayValues()[0]}
+function append_(n,o){const s=sh_(n),h=headers_(n);s.appendRow(h.map(k=>o[k]??""));clear_(n);return o}
+function save_(n,o){const s=sh_(n),h=headers_(n),v=s.getDataRange().getValues(),id=String(o[h[0]]||"");if(!id)throw Error(h[0]+" required");let rr=0;for(let i=1;i<v.length;i++)if(String(v[i][0])===id){rr=i+1;break}const row=h.map(k=>o[k]??"");rr?s.getRange(rr,1,1,h.length).setValues([row]):s.appendRow(row);clear_(n);return o}
+function hash_(x){return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,String(x),Utilities.Charset.UTF_8).map(b=>("0"+(b&255).toString(16)).slice(-2)).join("")}
+function token_(data){const t=Utilities.getUuid();SESSION.setProperty("S_"+t,JSON.stringify({exp:Date.now()+SESSION_TTL*1000,...data}));return t}
+function sess_(t){const x=SESSION.getProperty("S_"+t);if(!x)throw Error("Session expired");const d=JSON.parse(x);if(d.exp<Date.now()){SESSION.deleteProperty("S_"+t);throw Error("Session expired")}return d}
+function modules_(){return table_("AppModules").filter(x=>x.Status!=="Inactive")}
+function module_(key){const m=modules_().find(x=>x.ModuleKey===key);if(!m)throw Error("Unknown module: "+key);return m}
+function access_(designation){return table_("MainAppAccess").filter(x=>x.DesignationID===designation&&x.Status!=="Inactive")}
+function bool_(v){return String(v).toLowerCase()==="true"}
+function memberByPhone_(p){const q=String(p).replace(/\D/g,"");return table_("Members").find(x=>String(x.Mobile).replace(/\D/g,"")===q)}
+function loginRow_(id){return table_("MemberLogins").find(x=>x.MemberID===id)}
 function memberLogin_(p){
   const m=memberByPhone_(p.phone); if(!m)throw Error("Invalid phone number or password");
   if(m.Status==="Blacklisted")throw Error("This member is blacklisted and cannot login.");
   if(m.Status!=="Active")throw Error("This member account is inactive.");
-  const l=loginRow_(m.MemberID);if(!l||l.Status!=="Active"||l.PasswordHash!==hash_(p.password))throw Error("Invalid phone number or password");
-  const token=Utilities.getUuid(),data={kind:"member",member:m,access:mainAccess_(m.DesignationID)};
-  CACHE.put("S_"+token,JSON.stringify(data),SESSION_SECONDS);return{token,...data};
+  const l=loginRow_(m.MemberID); if(!l||l.Status!=="Active"||l.PasswordHash!==hash_(p.password))throw Error("Invalid phone number or password");
+  const a=access_(m.DesignationID),t=token_({kind:"member",memberId:m.MemberID,designationId:m.DesignationID});
+  return{token:t,member:m,access:a,modules:modules_().filter(x=>bool_(x.MainAppEligible)&&a.some(y=>y.ModuleKey===x.ModuleKey&&bool_(y.View)))};
 }
 function adminLogin_(p){
-  const u=rows_("Users").find(x=>(x.Email===p.user||x.UserID===p.user)&&x.Status!=="Inactive");
-  if(!u)throw Error("Invalid login");
-  const ok=String(u.PasswordHash)===String(p.password)||String(u.PasswordHash)===hash_(p.password);
-  if(!ok)throw Error("Invalid login");
-  const data={kind:"admin",user:u};const token=Utilities.getUuid();CACHE.put("S_"+token,JSON.stringify(data),SESSION_SECONDS);return{token,...data};
+  const u=table_("Users").find(x=>(x.UserID===p.user||x.Email===p.user)&&x.Status!=="Inactive");if(!u)throw Error("Invalid login");
+  if(!(u.PasswordHash===p.password||u.PasswordHash===hash_(p.password)))throw Error("Invalid login");
+  return{token:token_({kind:"admin",userId:u.UserID,roleId:u.RoleID}),user:u,modules:modules_().filter(x=>bool_(x.AdminVisible))};
 }
-function session_(t){const x=CACHE.get("S_"+t);if(!x)throw Error("Session expired");return JSON.parse(x)}
-function mainAccess_(designationId){return rows_("MainAppAccess").filter(x=>x.DesignationID===designationId&&x.Status!=="Inactive")}
-function can_(s,module,perm){
-  if(s.kind==="admin")return true;
-  const a=(s.access||[]).find(x=>x.ModuleKey===module);
-  if(!a||String(a.View).toLowerCase()!=="true")throw Error("Module access denied");
-  if(perm&&String(a[perm]).toLowerCase()!=="true")throw Error(perm+" access denied");
-  return a;
+function hydrate_(s){
+  if(s.kind==="admin"){s.user=table_("Users").find(x=>x.UserID===s.userId);return s}
+  s.member=table_("Members").find(x=>x.MemberID===s.memberId);if(!s.member||s.member.Status!=="Active")throw Error("Member access disabled");
+  s.access=access_(s.designationId);return s;
 }
-function descendants_(officeId){
-  const all=rows_("Offices"),set=new Set([officeId]);let changed=true;
-  while(changed){changed=false;all.forEach(o=>{if(o.ParentOfficeID&&set.has(o.ParentOfficeID)&&!set.has(o.OfficeID)){set.add(o.OfficeID);changed=true}})}
-  return set;
+function permission_(s,key,perm){
+  if(s.kind==="admin")return{Scope:"All"};
+  const a=s.access.find(x=>x.ModuleKey===key);if(!a||!bool_(a.View))throw Error("Access denied");
+  if(perm&&perm!=="View"&&!bool_(a[perm]))throw Error(perm+" permission denied");return a;
 }
-function scoped_(s,module,data){
+function descendants_(officeId){const all=table_("Offices"),set=new Set([officeId]);let c=true;while(c){c=false;all.forEach(o=>{if(o.ParentOfficeID&&set.has(o.ParentOfficeID)&&!set.has(o.OfficeID)){set.add(o.OfficeID);c=true}})}return set}
+function scope_(s,key,data){
   if(s.kind==="admin")return data;
-  const a=can_(s,module,"View"),m=s.member,scope=a.Scope||"Own";
+  const a=permission_(s,key,"View"),m=s.member,scope=a.Scope||"Own";
   if(scope==="Own")return data.filter(r=>r.MemberID===m.MemberID||r.ReferredByMemberID===m.MemberID||r.AssociateMemberID===m.MemberID||r.CollectorUserID===m.MemberID);
   if(scope==="Own + Direct Lower")return data.filter(r=>r.MemberID===m.MemberID||r.ReferredByMemberID===m.MemberID||r.AssociateMemberID===m.MemberID||r.OfficeID===m.OfficeID||r.Panchayat===m.Panchayat);
   if(scope==="Own + All Lower"){const ids=descendants_(m.OfficeID);return data.filter(r=>!r.OfficeID||ids.has(r.OfficeID)||r.MemberID===m.MemberID)}
   return data;
 }
-function nextReceipt_(){const l=LockService.getScriptLock();l.waitLock(30000);try{const s=sheet_("ReceiptSequence"),r=s.getRange(2,1,1,6).getValues()[0],n=Number(r[2]||1),d=Number(r[3]||6);if(n>999999)throw Error("Receipt sequence exhausted for financial year");const no=(r[1]||"SDR")+"/"+(r[0]||"2627")+"/"+String(n).padStart(d,"0");s.getRange(2,3).setValue(n+1);s.getRange(2,5,1,2).setValues([[no,new Date()]]);return no}finally{l.releaseLock()}}
-function nextMemberId_(){const y=Utilities.formatDate(new Date(),"Asia/Kolkata","yyyy");const n=rows_("Members").length+1;return"SCT/"+y+"/MB/"+String(n).padStart(5,"0")}
-function approveMember_(s,p){
-  const a=rows_("MembershipApplications").find(x=>x.ApplicationID===p.applicationId);if(!a)throw Error("Application not found");
-  if(a.ApplicationStatus==="Approved")throw Error("Already approved");
-  const memberId=nextMemberId_(),m={MemberID:memberId,Name:a.Name,FirstName:a.FirstName||firstName_(a.Name),FatherSpouse:a.FatherSpouse,DOB:a.DOB,Gender:a.Gender,Mobile:a.Mobile,Email:a.Email,Address:a.Address,State:a.State,District:a.District,Block:a.Block,Panchayat:a.Panchayat,AreaID:a.AreaID,OfficeID:a.OfficeID,DesignationID:a.DesignationID,Designation:a.MemberType,DepartmentID:a.DepartmentID,ReferredByMemberID:a.ReferredByMemberID,JoinDate:new Date(),Status:"Active"};
-  save_("Members",m);
-  const pw=defaultPassword_(m.Name,m.DOB);
-  append_("MemberLogins",{LoginID:m.Mobile,MemberID:memberId,Phone:m.Mobile,PasswordHash:hash_(pw),MustChangePassword:true,FailedAttempts:0,Status:"Active",PasswordChangedAt:new Date()});
-  a.ApplicationStatus="Approved";a.ReviewedBy=s.user.UserID;a.ReviewedAt=new Date();a.MemberID=memberId;save_("MembershipApplications",a);
-  if(a.ReferredByMemberID)append_("Referrals",{ReferralID:uid_("REF"),ReferralType:"Membership",Date:new Date(),ReferrerMemberID:a.ReferredByMemberID,ReferrerName:a.ReferredByName,ReferredPersonID:memberId,ReferredPersonName:m.Name,RelatedRecordID:a.ApplicationID,Source:a.Source});
-  audit_(s.user.UserID,"APPROVE","members",memberId,"New member approved");
-  return{member:m,login:{phone:m.Mobile,defaultPassword:pw,mustChange:true}};
+function dashboard_(s){
+ const names=["Members","Employees","Volunteers","Donors","Donations","Beneficiaries","Projects","Events"];
+ const counts={};names.forEach(n=>{try{counts[n]=s.kind==="admin"?table_(n).length:scope_(s,n.toLowerCase(),table_(n)).length}catch(e){counts[n]=0}});
+ return{counts,recent:table_("Notifications").slice(-5).reverse()};
 }
-function setMemberStatus_(s,p){
-  const m=rows_("Members").find(x=>x.MemberID===p.memberId);if(!m)throw Error("Member not found");
-  const old=m.Status;m.Status=p.status;m.StatusReason=p.reason||"";if(p.status==="Blacklisted")m.BlacklistedDate=new Date();save_("Members",m);
-  const l=loginRow_(m.MemberID);if(l){l.Status=p.status==="Active"?"Active":"Inactive";save_("MemberLogins",l)}
-  append_("MemberStatusHistory",{HistoryID:uid_("MSH"),MemberID:m.MemberID,OldStatus:old,NewStatus:p.status,Reason:p.reason,ChangedBy:s.user.UserID,ChangedAt:new Date()});
-  audit_(s.user.UserID,"STATUS","members",m.MemberID,old+" -> "+p.status);return m;
+function bootstrap_(s){
+ const mods=s.kind==="admin"?modules_().filter(x=>bool_(x.AdminVisible)):modules_().filter(x=>bool_(x.MainAppEligible)&&s.access.some(a=>a.ModuleKey===x.ModuleKey&&bool_(a.View)));
+ return{session:s.kind==="admin"?{kind:"admin",user:s.user}:{kind:"member",member:s.member},modules:mods,access:s.access||[],dashboard:dashboard_(s),offices:officeCards_(s)};
 }
-function resetPassword_(s,p){
-  const m=rows_("Members").find(x=>x.MemberID===p.memberId);if(!m)throw Error("Member not found");
-  let l=loginRow_(m.MemberID);if(!l)throw Error("Login not found");
-  const pw=p.password||defaultPassword_(m.Name,m.DOB);l.PasswordHash=hash_(pw);l.MustChangePassword=true;l.Status=m.Status==="Active"?"Active":"Inactive";l.PasswordChangedAt=new Date();save_("MemberLogins",l);audit_(s.user.UserID,"RESET_PASSWORD","members",m.MemberID,"Password reset");return{phone:m.Mobile,newPassword:pw};
+function officeCards_(s){
+ let os=table_("Offices");if(s.kind==="member"){permission_(s,"offices","View");const ids=descendants_(s.member.OfficeID);os=os.filter(x=>ids.has(x.OfficeID))}
+ const members=table_("Members"),all=table_("Offices");
+ return os.map(o=>({...o,MemberCount:members.filter(m=>m.OfficeID===o.OfficeID&&m.Status==="Active").length,LowerOfficeCount:all.filter(x=>x.ParentOfficeID===o.OfficeID).length}));
 }
-function changePassword_(s,p){
-  if(s.kind!=="member")throw Error("Member login required");const l=loginRow_(s.member.MemberID);if(!l||l.PasswordHash!==hash_(p.oldPassword))throw Error("Current password is incorrect");if(String(p.newPassword).length<6)throw Error("New password must be at least 6 characters");l.PasswordHash=hash_(p.newPassword);l.MustChangePassword=false;l.PasswordChangedAt=new Date();save_("MemberLogins",l);return true;
+function nextReceipt_(){const l=LockService.getScriptLock();l.waitLock(30000);try{const s=sh_("ReceiptSequence"),r=s.getRange(2,1,1,6).getValues()[0],n=Number(r[2]||1),d=Number(r[3]||6);const no=(r[1]||"SDR")+"/"+(r[0]||"2627")+"/"+String(n).padStart(d,"0");s.getRange(2,3).setValue(n+1);s.getRange(2,5,1,2).setValues([[no,new Date()]]);clear_("ReceiptSequence");return no}finally{l.releaseLock()}}
+function uid_(p){return p+"-"+Utilities.getUuid().slice(0,8).toUpperCase()}
+function approve_(s,p){
+ const a=table_("MembershipApplications",true).find(x=>x.ApplicationID===p.applicationId);if(!a)throw Error("Application not found");
+ const id="SCT/"+Utilities.formatDate(new Date(),"Asia/Kolkata","yyyy")+"/MB/"+String(table_("Members").length+1).padStart(5,"0");
+ const first=String(a.Name||"").trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z]/g,""),d=new Date(a.DOB),day=isNaN(d)?"01":String(d.getDate()).padStart(2,"0"),pw=first+day;
+ const m={MemberID:id,Name:a.Name,FirstName:first,DOB:a.DOB,Mobile:a.Mobile,Email:a.Email,Address:a.Address,State:a.State,District:a.District,Block:a.Block,Panchayat:a.Panchayat,AreaID:a.AreaID,OfficeID:a.OfficeID,DesignationID:a.DesignationID,Designation:a.MemberType,DepartmentID:a.DepartmentID,ReferredByMemberID:a.ReferredByMemberID,JoinDate:new Date(),Status:"Active"};
+ append_("Members",m);append_("MemberLogins",{LoginID:m.Mobile,MemberID:id,Phone:m.Mobile,PasswordHash:hash_(pw),MustChangePassword:true,FailedAttempts:0,Status:"Active",PasswordChangedAt:new Date()});
+ a.ApplicationStatus="Approved";a.ReviewedBy=s.userId;a.ReviewedAt=new Date();a.MemberID=id;save_("MembershipApplications",a);return{member:m,phone:m.Mobile,defaultPassword:pw};
 }
-function volunteerCount_(memberId){return rows_("Volunteers").filter(x=>x.MemberID===memberId||x.AssociateMemberID===memberId).length}
-function addVolunteer_(s,p){
-  if(s.kind!=="member")throw Error("Member login required");if(s.member.DesignationID!=="DES-AM")throw Error("Only Associate Member can add volunteers");
-  if(volunteerCount_(s.member.MemberID)>=20)throw Error("Maximum 20 volunteers allowed");
-  can_(s,"volunteers","Add");
-  const id=uid_("VOL");append_("Volunteers",{VolunteerID:id,MemberID:"",Name:p.name,Mobile:p.mobile,Skills:p.skills,InterestArea:p.interest,Availability:p.availability,AssignedActivity:"",JoiningDate:new Date(),Status:"Pending",AssociateMemberID:s.member.MemberID,Panchayat:s.member.Panchayat});
-  return{id};
-}
-function officeCards_(s){let a=rows_("Offices");if(s.kind==="member"){const acc=can_(s,"offices","View"),ids=descendants_(s.member.OfficeID);a=a.filter(x=>ids.has(x.OfficeID))}return a.map(o=>({...o,MemberCount:rows_("Members").filter(m=>m.OfficeID===o.OfficeID&&m.Status==="Active").length,LowerOfficeCount:rows_("Offices").filter(x=>x.ParentOfficeID===o.OfficeID).length}))}
-function createDonation_(s,p){
-  can_(s,"donations","Add");const no=nextReceipt_(),id=uid_("DON"),ref=s.kind==="member"?s.member.MemberID:"";
-  append_("Donations",{DonationID:id,ReceiptNo:no,Date:new Date(),DonorID:p.donorId||"",DonorName:p.donorName,Amount:p.amount,PaymentMode:p.paymentMode,TransactionNo:p.transactionNo,Purpose:p.purpose,ReceivedAt:p.receivedAt||"",CollectorUserID:ref,ReferredByMemberID:ref,ReferredByName:s.kind==="member"?s.member.Name:"",Source:s.kind==="member"?"Member App":"Admin App",SyncStatus:"Synced",VerificationStatus:s.kind==="member"?"Pending":"Verified",Status:s.kind==="member"?"Pending Verification":"Received"});
-  if(ref)append_("Referrals",{ReferralID:uid_("REF"),ReferralType:"Donation",Date:new Date(),ReferrerMemberID:ref,ReferrerName:s.member.Name,ReferredPersonID:p.donorId||"",ReferredPersonName:p.donorName,RelatedRecordID:id,Amount:p.amount,Source:"Member App"});
-  return{donationId:id,receiptNo:no};
-}
-function doGet(){return json_({ok:true,app:"Sewangan ERP API",version:"final-revised"})}
+function setStatus_(s,p){let m=table_("Members",true).find(x=>x.MemberID===p.memberId);if(!m)throw Error("Member not found");const old=m.Status;m.Status=p.status;m.StatusReason=p.reason||"";m.BlacklistedDate=p.status==="Blacklisted"?new Date():"";save_("Members",m);let l=loginRow_(m.MemberID);if(l){l.Status=p.status==="Active"?"Active":"Inactive";save_("MemberLogins",l)}append_("MemberStatusHistory",{HistoryID:uid_("MSH"),MemberID:m.MemberID,OldStatus:old,NewStatus:p.status,Reason:p.reason||"",ChangedBy:s.userId,ChangedAt:new Date()});return m}
+function resetPw_(s,p){const m=table_("Members").find(x=>x.MemberID===p.memberId),l=loginRow_(p.memberId);if(!m||!l)throw Error("Member/login not found");const d=new Date(m.DOB),pw=(String(m.FirstName||m.Name).split(/\s+/)[0].toLowerCase())+(isNaN(d)?"01":String(d.getDate()).padStart(2,"0"));l.PasswordHash=hash_(pw);l.MustChangePassword=true;l.PasswordChangedAt=new Date();save_("MemberLogins",l);return{phone:m.Mobile,password:pw}}
+function changePw_(s,p){if(s.kind!=="member")throw Error("Member login required");const l=loginRow_(s.memberId);if(l.PasswordHash!==hash_(p.oldPassword))throw Error("Current password incorrect");if(String(p.newPassword).length<6)throw Error("Minimum 6 characters");l.PasswordHash=hash_(p.newPassword);l.MustChangePassword=false;l.PasswordChangedAt=new Date();save_("MemberLogins",l);return true}
+function donation_(s,p){permission_(s,"donations","Add");const no=nextReceipt_(),id=uid_("DON"),mid=s.kind==="member"?s.memberId:"";append_("Donations",{DonationID:id,ReceiptNo:no,Date:new Date(),DonorID:p.DonorID||"",DonorName:p.DonorName,Amount:p.Amount,PaymentMode:p.PaymentMode,TransactionNo:p.TransactionNo||"",Purpose:p.Purpose||"General Donation",CollectorUserID:mid,ReferredByMemberID:mid,Source:s.kind==="member"?"Member App":"Admin App",SyncStatus:"Synced",VerificationStatus:s.kind==="member"?"Pending":"Verified",Status:s.kind==="member"?"Pending Verification":"Received"});return{DonationID:id,ReceiptNo:no}}
+function doGet(){return out_({ok:true,app:"Sewangan ERP API",version:"android-final-v2"})}
 function doPost(e){try{
-  const q=JSON.parse(e.postData.contents||"{}"),a=q.action,p=q.payload||{};let s=null;
-  if(!["memberLogin","adminLogin","publicSettings","joinRequest"].includes(a))s=session_(q.token);
-  let d;
-  if(a==="memberLogin")d=memberLogin_(p);
-  else if(a==="adminLogin")d=adminLogin_(p);
-  else if(a==="session")d=s;
-  else if(a==="publicSettings")d={organization:kv_("Organization","Key","Value"),settings:kv_("Settings"),designations:rows_("Designations")};
-  else if(a==="joinRequest"){const id=uid_("APP");append_("MembershipApplications",{ApplicationID:id,Date:new Date(),Source:p.source||"Website",MemberType:p.designation,DesignationID:p.designationId,Name:p.name,FirstName:firstName_(p.name),FatherSpouse:p.fatherSpouse,DOB:p.dob,Gender:p.gender,Mobile:p.mobile,Email:p.email,Address:p.address,State:p.state,District:p.district,Block:p.block,Panchayat:p.panchayat,AreaID:p.areaId,OfficeID:p.officeId,DepartmentID:p.departmentId,ReferredByMemberID:p.referredByMemberId||"",ReferredByName:p.referredByName||"",ApplicationStatus:"Pending"});d={applicationId:id}}
-  else if(a==="mainAccess")d=s.kind==="member"?s.access:rows_("MainAppAccess");
-  else if(a==="officeCards")d=officeCards_(s);
-  else if(a==="list"){can_(s,p.module,"View");d=scoped_(s,p.module,rows_(MODULE_SHEETS[p.module]))}
-  else if(a==="save"){can_(s,p.module,p.isEdit?"Edit":"Add");d=save_(MODULE_SHEETS[p.module],p.record)}
-  else if(a==="addVolunteer")d=addVolunteer_(s,p);
-  else if(a==="createDonation")d=createDonation_(s,p);
-  else if(a==="approveMember"){if(s.kind!=="admin")throw Error("Admin required");d=approveMember_(s,p)}
-  else if(a==="setMemberStatus"){if(s.kind!=="admin")throw Error("Admin required");d=setMemberStatus_(s,p)}
-  else if(a==="resetPassword"){if(s.kind!=="admin")throw Error("Admin required");d=resetPassword_(s,p)}
-  else if(a==="changePassword")d=changePassword_(s,p);
-  else if(a==="memberDetails"){if(s.kind!=="admin")throw Error("Admin required");const m=rows_("Members").find(x=>x.MemberID===p.memberId);d={member:m,login:loginRow_(p.memberId),referrals:rows_("Referrals").filter(x=>x.ReferrerMemberID===p.memberId),documents:rows_("MemberGeneratedDocuments").filter(x=>x.MemberID===p.memberId)}}
-  else if(a==="saveMainAccess"){if(s.kind!=="admin")throw Error("Admin required");p.rows.forEach(r=>save_("MainAppAccess",r));d=true}
-  else throw Error("Unknown action");
-  return json_({ok:true,data:d});
-}catch(err){return json_({ok:false,error:String(err.message||err)})}}
+ const q=JSON.parse(e.postData.contents||"{}"),a=q.action,p=q.payload||{};let s=null;if(!["memberLogin","adminLogin"].includes(a))s=hydrate_(sess_(q.token));
+ let d;
+ if(a==="memberLogin")d=memberLogin_(p);
+ else if(a==="adminLogin")d=adminLogin_(p);
+ else if(a==="bootstrap")d=bootstrap_(s);
+ else if(a==="list"){const m=module_(p.module);permission_(s,p.module,"View");d=scope_(s,p.module,table_(m.SheetName))}
+ else if(a==="save"){const m=module_(p.module);permission_(s,p.module,p.isEdit?"Edit":"Add");d=save_(m.SheetName,p.record)}
+ else if(a==="officeCards")d=officeCards_(s);
+ else if(a==="approveMember"){if(s.kind!=="admin")throw Error("Admin required");d=approve_(s,p)}
+ else if(a==="setMemberStatus"){if(s.kind!=="admin")throw Error("Admin required");d=setStatus_(s,p)}
+ else if(a==="resetPassword"){if(s.kind!=="admin")throw Error("Admin required");d=resetPw_(s,p)}
+ else if(a==="changePassword")d=changePw_(s,p);
+ else if(a==="createDonation")d=donation_(s,p);
+ else if(a==="mainAccess"){if(s.kind!=="admin")throw Error("Admin required");d=table_("MainAppAccess")}
+ else if(a==="saveMainAccess"){if(s.kind!=="admin")throw Error("Admin required");p.rows.forEach(r=>save_("MainAppAccess",r));d=true}
+ else if(a==="memberDetails"){if(s.kind!=="admin")throw Error("Admin required");d={member:table_("Members").find(x=>x.MemberID===p.memberId),documents:table_("MemberGeneratedDocuments").filter(x=>x.MemberID===p.memberId),referrals:table_("Referrals").filter(x=>x.ReferrerMemberID===p.memberId)}}
+ else throw Error("Unknown action");
+ return out_({ok:true,data:d});
+}catch(err){return out_({ok:false,error:String(err.message||err)})}}

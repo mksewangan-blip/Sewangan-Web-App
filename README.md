@@ -1,12 +1,16 @@
-# Sewangan Main App — Final Revised Build
-This is the logged-in member/office operational app, not a public-only portal.
+# Sewangan Main App — Android-first v2
+API is preconfigured to the production Apps Script /exec URL supplied by the user.
+Temporary National-level test member:
+Phone: 9999999999
+Password: national02
+Designation: National Secretary
+Member ID: SCT/2026/TEST/00001
+Valid until: 2026-12-31
 
-Key behavior:
-- Phone number + password login.
-- Member status enforcement: Active can login; Inactive/Blacklisted cannot.
-- Designation-wise Main App access from Admin: View / Add / Edit / Delete / Approve + hierarchy Scope.
-- Only accessible modules are shown.
-- Office/lower-level register cards.
-- Associate Member can add up to 20 volunteers.
-- Member-created donations automatically record referral.
-- Member-app joining can carry logged-in referrer details.
+Performance:
+- one bootstrap request after login
+- local cached bootstrap for instant reopen
+- Apps Script CacheService for sheet reads
+- module data loaded only when opened
+- no repeated 5-second reloads
+- compact mobile UI modeled after the Sursand Connect card/tile approach
